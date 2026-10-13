@@ -94,7 +94,7 @@ def format_sources(documents):
     return sources
 
 if __name__ == '__main__':
-    # Load the existing Astra DB vector store
+    # Load the existing Supabase vector store
     vstore = ingestdata("done")
     
     # Initialize the generation chain

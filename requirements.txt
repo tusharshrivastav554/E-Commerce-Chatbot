@@ -1,4 +1,4 @@
-langchain-astradb
+langchain-community
 langchain
 langchain-google-genai
 google-generativeai
@@ -7,4 +7,5 @@ pypdf
 python-dotenv
 flask
 pytest
+supabase
 -e .

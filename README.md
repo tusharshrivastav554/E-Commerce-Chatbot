@@ -7,7 +7,7 @@ The application combines:
 - **Flask** for the web application and HTTP API.
 - **LangChain** for document handling, retrieval, and chain orchestration.
 - **Google Gemini** for text embeddings and answer generation.
-- **Astra DB** as the cloud vector store.
+- **Supabase** as the hosted Postgres/pgvector store.
 - **Vanilla JavaScript and Bootstrap** for the browser chat interface.
 
 The project is intentionally scoped as a practical proof of concept. It is not a live e-commerce catalog, an order-management system, or a personalized recommendation engine.
@@ -47,7 +47,7 @@ The chatbot lets a user ask questions such as:
 For each question, the application:
 
 1. Receives the question through the browser.
-2. Searches the Astra DB vector store for semantically relevant product-review documents.
+2. Searches the Supabase pgvector store for semantically relevant product-review documents.
 3. Sends the retrieved context and question to Gemini 2.5 Flash.
 4. Generates a concise answer grounded in the retrieved review context.
 5. Displays lightweight evidence references containing product names and ratings.
@@ -73,7 +73,7 @@ data/flipkart_product_review.csv
        Gemini text embeddings
                 |
                 v
-       Astra DB vector collection
+       Supabase pgvector table
 ```
 
 ### Question-answering flow
@@ -85,7 +85,7 @@ Browser question
 Flask POST /get endpoint
         |
         v
-Astra DB semantic retriever, top 3 results
+Supabase semantic retriever, top 3 results
         |
         v
 Grounded prompt + retrieved context
@@ -102,7 +102,7 @@ Browser chat interface
 
 ### Runtime behavior
 
-The application connects to the existing Astra DB collection lazily when the first question is submitted. Importing `app.py` does not automatically read or ingest the CSV. Ingestion is an explicit operation performed separately.
+The application connects to the existing Supabase vector table lazily when the first question is submitted. Importing `app.py` does not automatically read or ingest the CSV. Ingestion is an explicit operation performed separately.
 
 ---
 
@@ -125,10 +125,13 @@ E-Commerce-Chatbot-main/
 │   └── chat.html
 ├── static/
 │   └── style.css
+├── supabase/
+│   └── schema.sql
 ├── tests/
 │   ├── conftest.py
 │   ├── test_app.py
-│   └── test_data_converter.py
+│   ├── test_data_converter.py
+│   └── test_ingest.py
 └── notebook/
     └── trails.ipynb
 ```
@@ -139,11 +142,11 @@ E-Commerce-Chatbot-main/
 |---|---|
 | `app.py` | Flask app, web route, chat endpoint, response normalization, error handling |
 | `ecommbot/data_converter.py` | Stable CSV path resolution, validation, cleaning, document creation |
-| `ecommbot/ingest.py` | Environment validation, Gemini embeddings, Astra DB connection, explicit ingestion |
+| `ecommbot/ingest.py` | Environment validation, Gemini embeddings, Supabase connection, explicit ingestion |
 | `ecommbot/retrieval_genreation.py` | Retriever, grounded prompt, Gemini generation, source formatting |
 | `templates/chat.html` | Accessible chat UI, fetch request, loading state, safe text rendering |
 | `static/style.css` | Chat layout and visual styling |
-| `tests/` | Local tests that do not call real Gemini or Astra DB services |
+| `tests/` | Local tests that do not call real Gemini or Supabase services |
 
 > Note: The existing module name `retrieval_genreation.py` contains the original spelling `genreation`. It is kept unchanged to avoid breaking imports.
 
@@ -153,8 +156,9 @@ E-Commerce-Chatbot-main/
 
 - Python **3.10 or newer**.
 - A Google AI/Gemini API key.
-- An Astra DB database and application token.
-- Network access to Google’s Gemini API and Astra DB when ingesting or chatting.
+- A Supabase project with the pgvector extension available.
+- A Supabase project URL and server-side service-role key.
+- Network access to Google’s Gemini API and Supabase when ingesting or chatting.
 
 The project can run its local unit tests without external API credentials, but real ingestion and chat requests require valid credentials.
 
@@ -208,9 +212,8 @@ Use this template and replace each placeholder locally:
 
 ```dotenv
 GOOGLE_API_KEY=your_google_gemini_api_key
-ASTRA_DB_API_ENDPOINT=https://your-database-id-region.apps.astra.datastax.com
-ASTRA_DB_APPLICATION_TOKEN=AstraCS:your_application_token
-ASTRA_DB_KEYSPACE=your_keyspace
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your_server_only_service_role_key
 FLASK_DEBUG=false
 ```
 
@@ -219,18 +222,21 @@ FLASK_DEBUG=false
 | Variable | Required for | Description |
 |---|---|---|
 | `GOOGLE_API_KEY` | Ingestion and chat | Google Gemini API authentication |
-| `ASTRA_DB_API_ENDPOINT` | Ingestion and chat | Astra DB Data API endpoint |
-| `ASTRA_DB_APPLICATION_TOKEN` | Ingestion and chat | Astra DB application token |
-| `ASTRA_DB_KEYSPACE` | Ingestion and chat | Astra DB namespace/keyspace |
+| `SUPABASE_URL` | Ingestion and chat | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Ingestion and chat | Server-only Supabase service-role key |
 | `FLASK_DEBUG` | Optional | Enables Flask debug mode only when set to `true`, `1`, or `yes` |
 
 Never commit `.env`, API keys, application tokens, or private service configuration. `.env` is already included in `.gitignore`.
 
-The application validates the four required service variables before creating Gemini or Astra DB clients. If a variable is missing, it raises an actionable configuration error rather than failing later with an opaque provider error.
+The application validates the three required service variables before creating Gemini or Supabase clients. If a variable is missing, it raises an actionable configuration error rather than failing later with an opaque provider error.
+
+### Service-role key security
+
+`SUPABASE_SERVICE_ROLE_KEY` bypasses Supabase Row Level Security and must remain server-side. Do not place it in `templates/`, `static/`, browser JavaScript, public repositories, or client-side environment variables. The Flask backend uses it for ingestion and retrieval; the browser communicates only with the Flask `/get` endpoint.
 
 ---
 
-## Prepare the vector store
+## Prepare the Supabase vector store
 
 The source dataset is located at:
 
@@ -254,8 +260,26 @@ This operation:
 2. Reads and validates the CSV.
 3. Converts usable rows into LangChain documents.
 4. Creates Gemini embeddings using `models/text-embedding-004`.
-5. Inserts the documents into the Astra DB collection named `chatbotecomm`.
+5. Inserts the documents into the Supabase table named `chatbotecomm`.
 6. Runs a small verification similarity search and prints the retrieved documents.
+
+### Create the Supabase schema
+
+Before ingestion, open the Supabase dashboard’s **SQL Editor** and run the contents of:
+
+```text
+supabase/schema.sql
+```
+
+The schema creates:
+
+- The `vector` extension in the `extensions` schema.
+- The `public.chatbotecomm` document table.
+- A 768-dimensional embedding column for Gemini `text-embedding-004` embeddings.
+- The `match_documents` RPC function required by LangChain’s `SupabaseVectorStore`.
+- An HNSW cosine-similarity index.
+
+The SQL function must return columns named `content`, `metadata`, and `similarity`. These names are used by the LangChain Supabase adapter when reconstructing retrieved `Document` objects.
 
 ### Required CSV columns
 
@@ -273,23 +297,25 @@ Rows with an empty customer review are skipped because they do not provide usefu
 
 ### Important ingestion note
 
-Ingestion is explicit and should normally be run once for a dataset and collection. Running it repeatedly with the same data may insert duplicate documents depending on the Astra DB collection configuration. If the dataset changes substantially, use a deliberate collection refresh or a new collection rather than repeatedly appending the same CSV.
+Ingestion is explicit and should normally be run once for a dataset and table. Running it repeatedly with the same data inserts duplicate rows unless you clear the table or add a separate deduplication strategy. If the dataset changes substantially, use a deliberate table refresh or a new table rather than repeatedly appending the same CSV.
 
-The collection name can be changed programmatically by calling:
+The table name can be changed programmatically by calling:
 
 ```python
 from ecommbot.ingest import ingest_documents
 
 vector_store, inserted_ids = ingest_documents(
-    collection_name="my-product-reviews"
+    table_name="my_product_reviews"
 )
 ```
+
+To use a different table, create the same table/function pattern from `supabase/schema.sql` and update the table name in the function call.
 
 ---
 
 ## Run the application
 
-After the vector collection has been populated:
+After the Supabase vector table has been populated:
 
 ```powershell
 python app.py
@@ -301,7 +327,7 @@ Open the address shown by Flask, normally:
 http://127.0.0.1:5000/
 ```
 
-The application does not ingest the CSV when it starts. It connects to the existing Astra DB vector collection only when the first question is submitted.
+The application does not ingest the CSV when it starts. It connects to the existing Supabase vector table only when the first question is submitted.
 
 ### Alternative Flask command
 
@@ -407,7 +433,7 @@ The current tests cover:
 - Successful API response shape.
 - Controlled handling of retrieval-chain failures.
 
-The tests mock the chatbot chain and use temporary CSV fixtures. They do not call Gemini or Astra DB, so they can run without credentials or network access.
+The tests mock the chatbot chain and use temporary CSV fixtures. They do not call Gemini or Supabase, so they can run without credentials or network access.
 
 ### Syntax check
 
@@ -423,7 +449,7 @@ python -c "from ecommbot.data_converter import dataconveter; docs = dataconveter
 
 ### Real provider smoke test
 
-With a valid `.env` and an accessible Astra DB collection, run the ingestion command and then submit a browser question. This is separate from the automated test suite because it depends on external services, credentials, quotas, and network availability.
+With a valid `.env`, the Supabase schema applied, and an accessible Supabase project, run the ingestion command and then submit a browser question. This is separate from the automated test suite because it depends on external services, credentials, quotas, and network availability.
 
 ---
 
@@ -458,9 +484,9 @@ This design keeps important structured fields available for evidence display whi
 
 The reviews are external knowledge that may change. RAG allows the application to update the searchable content by ingesting new documents without retraining a language model.
 
-### Why Astra DB?
+### Why Supabase?
 
-Astra DB provides a managed cloud vector-store integration and makes the project more relevant to cloud data ecosystems and client-facing GenAI implementations.
+Supabase provides hosted Postgres with pgvector support, a familiar relational data model, and an SQL-defined retrieval function. This makes the document store and similarity-search contract explicit while keeping the project relevant to cloud data ecosystems and client-facing GenAI implementations.
 
 ### Why top-3 retrieval?
 
@@ -488,8 +514,8 @@ This project should be described accurately as a focused RAG proof of concept.
 - It does not personalize recommendations to a user’s profile.
 - It relies on the quality, coverage, and bias of the review dataset.
 - It does not yet include a formal retrieval precision/recall evaluation set.
-- Repeated ingestion may create duplicate documents in the vector collection.
-- Real requests depend on external Gemini and Astra DB credentials, connectivity, quotas, and service availability.
+- Repeated ingestion may create duplicate documents in the Supabase vector table.
+- Real requests depend on external Gemini and Supabase credentials, connectivity, quotas, and service availability.
 
 ---
 
@@ -511,26 +537,26 @@ python -c "import sys; print(sys.executable)"
 
 ### Missing environment-variable error
 
-Check that `.env` exists in the same directory as `app.py` and contains all four required service variables:
+Check that `.env` exists in the same directory as `app.py` and contains all three required service variables:
 
 ```text
 GOOGLE_API_KEY
-ASTRA_DB_API_ENDPOINT
-ASTRA_DB_APPLICATION_TOKEN
-ASTRA_DB_KEYSPACE
+SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
 ```
 
 Do not add quotes unless they are intentionally part of the value, and do not include extra spaces around the assignment.
 
-### Astra DB connection failure
+### Supabase connection failure
 
 Check:
 
-1. The endpoint is the Astra DB Data API endpoint, not a web-console URL.
-2. The application token is active and has access to the keyspace.
-3. The keyspace/namespace is correct.
-4. The machine can reach Astra DB over the network.
-5. The vector collection name is `chatbotecomm`, unless you intentionally changed it.
+1. `SUPABASE_URL` is the project URL, not a dashboard URL.
+2. `SUPABASE_SERVICE_ROLE_KEY` is active and is being used only by the backend.
+3. The SQL in `supabase/schema.sql` has been executed successfully.
+4. The `public.chatbotecomm` table and `public.match_documents` function exist.
+5. The embedding column is `extensions.vector(768)`, matching `text-embedding-004`.
+6. The machine can reach Supabase over the network.
 
 ### Chat starts but returns a provider error
 
@@ -538,7 +564,7 @@ Check the terminal output for the server-side traceback. Common causes include:
 
 - An invalid or expired Google API key.
 - Gemini quota or model access restrictions.
-- An unavailable Astra DB collection.
+- A missing Supabase table or `match_documents` function.
 - A network or TLS issue.
 - Incorrect environment-variable values.
 
@@ -550,14 +576,18 @@ The answer depends on the retrieved review context. Try a question that matches 
 
 ### Duplicate documents after ingestion
 
-The current ingestion function adds the converted documents to the selected collection. Do not repeatedly run ingestion against the same collection unless duplicate data is acceptable. Use a deliberate collection refresh strategy before reloading a changed dataset.
+The current ingestion function adds the converted documents to the selected Supabase table. Do not repeatedly run ingestion against the same table unless duplicate data is acceptable. To clear the default table before a deliberate reload, run this in the Supabase SQL Editor:
+
+```sql
+truncate table public.chatbotecomm restart identity;
+```
 
 ---
 
 ## Possible next improvements
 
 1. Add a small labeled evaluation set for retrieval quality and grounded-answer behavior.
-2. Add a deterministic deduplication or collection-refresh workflow for repeated ingestion.
+2. Add a deterministic deduplication or table-refresh workflow for repeated ingestion.
 3. Add optional conversation history with a clear context-length limit.
 4. Add structured filtering by rating or product ID.
 5. Add a proper product catalog source for price and availability.

@@ -3,18 +3,17 @@ from pathlib import Path
 from typing import Iterable, Mapping, Optional, Union
 
 from dotenv import load_dotenv
-
+from langchain_community.vectorstores import SupabaseVectorStore
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_astradb import AstraDBVectorStore
+from supabase import create_client
 from ecommbot.data_converter import dataconveter
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 REQUIRED_ENVIRONMENT = (
     "GOOGLE_API_KEY",
-    "ASTRA_DB_API_ENDPOINT",
-    "ASTRA_DB_APPLICATION_TOKEN",
-    "ASTRA_DB_KEYSPACE",
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
 )
 
 
@@ -28,41 +27,45 @@ def validate_configuration(
         missing_names = ", ".join(missing)
         raise ValueError(
             "Missing required environment variable(s): "
-            f"{missing_names}. Add them to .env before using Gemini or Astra DB."
+            f"{missing_names}. Add them to .env before using Gemini or Supabase."
         )
     return configuration
 
 
 def _create_vector_store(
     configuration: Mapping[str, str],
-    collection_name: str = "chatbotecomm",
+    table_name: str = "chatbotecomm",
 ):
     embedding = GoogleGenerativeAIEmbeddings(
         model="models/text-embedding-004",
         google_api_key=configuration["GOOGLE_API_KEY"],
     )
-    return AstraDBVectorStore(
+
+    supabase_client = create_client(
+        configuration["SUPABASE_URL"],
+        configuration["SUPABASE_SERVICE_ROLE_KEY"],
+    )
+    return SupabaseVectorStore(
+        client=supabase_client,
         embedding=embedding,
-        collection_name=collection_name,
-        api_endpoint=configuration["ASTRA_DB_API_ENDPOINT"],
-        token=configuration["ASTRA_DB_APPLICATION_TOKEN"],
-        namespace=configuration["ASTRA_DB_KEYSPACE"],
+        table_name=table_name,
+        query_name="match_documents",
     )
 
 
-def connect_to_vector_store(collection_name: str = "chatbotecomm"):
-    """Connect to an existing Astra collection without loading or inserting data."""
+def connect_to_vector_store(table_name: str = "chatbotecomm"):
+    """Connect to an existing Supabase vector table without inserting data."""
     configuration = validate_configuration()
-    return _create_vector_store(configuration, collection_name=collection_name)
+    return _create_vector_store(configuration, table_name=table_name)
 
 
 def ingest_documents(
     csv_path: Optional[Union[str, os.PathLike]] = None,
-    collection_name: str = "chatbotecomm",
+    table_name: str = "chatbotecomm",
 ):
     """Convert and insert source documents as an explicit ingestion operation."""
     configuration = validate_configuration()
-    vstore = _create_vector_store(configuration, collection_name=collection_name)
+    vstore = _create_vector_store(configuration, table_name=table_name)
     docs = dataconveter(csv_path)
     inserted_ids = vstore.add_documents(docs)
     return vstore, inserted_ids
@@ -71,7 +74,7 @@ def ingest_documents(
 def ingestdata(status=None):
     """Backward-compatible wrapper for the original status-based API.
 
-    Existing callers passing a non-None status connect to the collection. The
+    Existing callers passing a non-None status connect to the table. The
     legacy ``None`` path still performs ingestion, but new code should call
     ``ingest_documents`` or ``connect_to_vector_store`` explicitly.
     """
@@ -81,7 +84,7 @@ def ingestdata(status=None):
 
 if __name__ == '__main__':
     vstore, inserted_ids = ingest_documents()
-    print(f"\nSuccessfully inserted {len(inserted_ids)} documents using text-embedding-004.")
+    print(f"\nSuccessfully inserted {len(inserted_ids)} documents into Supabase using text-embedding-004.")
     
     # Verification Search
     results = vstore.similarity_search("can you tell me the low budget sound basshead.")
