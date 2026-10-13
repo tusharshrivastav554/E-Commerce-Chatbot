@@ -30,7 +30,8 @@ as $$
         1 - (d.embedding <=> query_embedding) as similarity
     from public.chatbotecomm as d
     order by d.embedding <=> query_embedding;
-$$;
+$$
+language sql;
 
 create index if not exists chatbotecomm_embedding_idx
 on public.chatbotecomm

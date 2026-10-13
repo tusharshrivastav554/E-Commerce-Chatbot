@@ -37,8 +37,9 @@ def _create_vector_store(
     table_name: str = "chatbotecomm",
 ):
     embedding = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
+        model="models/gemini-embedding-001",
         google_api_key=configuration["GOOGLE_API_KEY"],
+        output_dimensionality=768,
     )
 
     supabase_client = create_client(
@@ -62,13 +63,34 @@ def connect_to_vector_store(table_name: str = "chatbotecomm"):
 def ingest_documents(
     csv_path: Optional[Union[str, os.PathLike]] = None,
     table_name: str = "chatbotecomm",
+    batch_size: int = 20,
+    batch_delay: float = 65.0,
 ):
-    """Convert and insert source documents as an explicit ingestion operation."""
+    """Convert and insert source documents as an explicit ingestion operation.
+
+    Documents are inserted in batches to stay within the free-tier embedding
+    quota of 100 requests per minute for gemini-embedding-001.
+    """
+    import time
+
     configuration = validate_configuration()
     vstore = _create_vector_store(configuration, table_name=table_name)
     docs = dataconveter(csv_path)
-    inserted_ids = vstore.add_documents(docs)
-    return vstore, inserted_ids
+
+    all_ids = []
+    total = len(docs)
+    for start in range(0, total, batch_size):
+        batch = docs[start : start + batch_size]
+        batch_num = start // batch_size + 1
+        total_batches = (total + batch_size - 1) // batch_size
+        print(f"Inserting batch {batch_num}/{total_batches} ({len(batch)} docs)...", flush=True)
+        ids = vstore.add_documents(batch)
+        all_ids.extend(ids)
+        if start + batch_size < total:
+            print(f"  Waiting {int(batch_delay)}s for rate-limit cooldown...", flush=True)
+            time.sleep(batch_delay)
+
+    return vstore, all_ids
 
 
 def ingestdata(status=None):
@@ -84,9 +106,10 @@ def ingestdata(status=None):
 
 if __name__ == '__main__':
     vstore, inserted_ids = ingest_documents()
-    print(f"\nSuccessfully inserted {len(inserted_ids)} documents into Supabase using text-embedding-004.")
-    
+    print(f"\nSuccessfully inserted {len(inserted_ids)} documents into Supabase using gemini-embedding-001.")
+
     # Verification Search
     results = vstore.similarity_search("can you tell me the low budget sound basshead.")
     for res in results:
         print(f"* {res.page_content} [{res.metadata}]")
+

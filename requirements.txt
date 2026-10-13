@@ -1,6 +1,7 @@
 langchain-community
 langchain
 langchain-google-genai
+langchain-openai
 google-generativeai
 datasets
 pypdf

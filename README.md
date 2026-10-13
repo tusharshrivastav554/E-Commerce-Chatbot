@@ -7,6 +7,7 @@ The application combines:
 - **Flask** for the web application and HTTP API.
 - **LangChain** for document handling, retrieval, and chain orchestration.
 - **Google Gemini** for text embeddings and answer generation.
+- **OpenRouter** as an optional answer-generation fallback when Gemini is unavailable.
 - **Supabase** as the hosted Postgres/pgvector store.
 - **Vanilla JavaScript and Bootstrap** for the browser chat interface.
 
@@ -48,9 +49,15 @@ For each question, the application:
 
 1. Receives the question through the browser.
 2. Searches the Supabase pgvector store for semantically relevant product-review documents.
-3. Sends the retrieved context and question to Gemini 2.5 Flash.
-4. Generates a concise answer grounded in the retrieved review context.
-5. Displays lightweight evidence references containing product names and ratings.
+3. Sends the retrieved context and question to the configured Gemini Flash primary model.
+4. If Gemini generation fails and `OPENROUTER_API_KEY` is configured, sends the same
+   context and question to the OpenRouter fallback model.
+5. Returns a concise answer grounded in the retrieved review context.
+6. Displays lightweight evidence references containing product names and ratings.
+
+If `OPENROUTER_API_KEY` is configured and Gemini generation fails, the same retrieved
+context is sent to the configured OpenRouter fallback model. Retrieval is not repeated,
+and the fallback uses the same grounding instructions.
 
 The chatbot is instructed not to invent unsupported information such as current price, availability, delivery time, warranty, or technical specifications that are not present in the retrieved reviews.
 
@@ -91,9 +98,13 @@ Supabase semantic retriever, top 3 results
 Grounded prompt + retrieved context
         |
         v
-Gemini 2.5 Flash
-        |
-        v
+Configured Gemini Flash primary model
+         |
+         | on generation failure, when configured
+         v
+OpenRouter NVIDIA fallback model
+         |
+         v
 JSON answer and evidence sources
         |
         v
@@ -103,6 +114,11 @@ Browser chat interface
 ### Runtime behavior
 
 The application connects to the existing Supabase vector table lazily when the first question is submitted. Importing `app.py` does not automatically read or ingest the CSV. Ingestion is an explicit operation performed separately.
+
+Each chat request retrieves the top three documents once. Gemini is attempted first. If
+Gemini generation fails and an OpenRouter key is configured, the fallback receives the
+same prompt and retrieved context; retrieval and embeddings are not repeated. If the
+OpenRouter key is absent, Gemini remains the only generation provider.
 
 ---
 
@@ -114,6 +130,7 @@ E-Commerce-Chatbot-main/
 ├── requirements.txt
 ├── setup.py
 ├── .gitignore
+├── .env.example
 ├── data/
 │   └── flipkart_product_review.csv
 ├── ecommbot/
@@ -131,7 +148,8 @@ E-Commerce-Chatbot-main/
 │   ├── conftest.py
 │   ├── test_app.py
 │   ├── test_data_converter.py
-│   └── test_ingest.py
+│   ├── test_ingest.py
+│   └── test_retrieval_generation.py
 └── notebook/
     └── trails.ipynb
 ```
@@ -143,7 +161,7 @@ E-Commerce-Chatbot-main/
 | `app.py` | Flask app, web route, chat endpoint, response normalization, error handling |
 | `ecommbot/data_converter.py` | Stable CSV path resolution, validation, cleaning, document creation |
 | `ecommbot/ingest.py` | Environment validation, Gemini embeddings, Supabase connection, explicit ingestion |
-| `ecommbot/retrieval_genreation.py` | Retriever, grounded prompt, Gemini generation, source formatting |
+| `ecommbot/retrieval_genreation.py` | Retriever, grounded prompt, Gemini primary generation, OpenRouter fallback, latency logging, source formatting |
 | `templates/chat.html` | Accessible chat UI, fetch request, loading state, safe text rendering |
 | `static/style.css` | Chat layout and visual styling |
 | `tests/` | Local tests that do not call real Gemini or Supabase services |
@@ -155,7 +173,8 @@ E-Commerce-Chatbot-main/
 ## Prerequisites
 
 - Python **3.10 or newer**.
-- A Google AI/Gemini API key.
+- A Google AI/Gemini API key for embeddings and primary generation.
+- An OpenRouter API key is optional; it enables the fallback answer-generation provider.
 - A Supabase project with the pgvector extension available.
 - A Supabase project URL and server-side service-role key.
 - Network access to Google’s Gemini API and Supabase when ingesting or chatting.
@@ -197,6 +216,8 @@ python -m pip install -r requirements.txt
 ```
 
 The `-e .` entry in `requirements.txt` installs the local `Ecommercebot` package in editable mode.
+The requirements also include `langchain-openai`, which provides the OpenAI-compatible
+client used for the OpenRouter fallback.
 
 ---
 
@@ -214,7 +235,10 @@ Use this template and replace each placeholder locally:
 GOOGLE_API_KEY=your_google_gemini_api_key
 SUPABASE_URL=https://your-project-ref.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your_server_only_service_role_key
+GEMINI_MODEL=gemini-3.8-flash
 FLASK_DEBUG=false
+OPENROUTER_API_KEY=your_openrouter_api_key
+OPENROUTER_MODEL=nvidia/nemotron-3.5-lightning:free
 ```
 
 ### Configuration variables
@@ -224,11 +248,32 @@ FLASK_DEBUG=false
 | `GOOGLE_API_KEY` | Ingestion and chat | Google Gemini API authentication |
 | `SUPABASE_URL` | Ingestion and chat | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Ingestion and chat | Server-only Supabase service-role key |
+| `GEMINI_MODEL` | Chat only | Optional Gemini generation model; defaults to `gemini-3.8-flash` |
 | `FLASK_DEBUG` | Optional | Enables Flask debug mode only when set to `true`, `1`, or `yes` |
+| `OPENROUTER_API_KEY` | Optional fallback | OpenRouter API key for fallback answer generation |
+| `OPENROUTER_MODEL` | Optional fallback | Defaults to `nvidia/nemotron-3.5-lightning:free` |
 
 Never commit `.env`, API keys, application tokens, or private service configuration. `.env` is already included in `.gitignore`.
 
 The application validates the three required service variables before creating Gemini or Supabase clients. If a variable is missing, it raises an actionable configuration error rather than failing later with an opaque provider error.
+
+The OpenRouter key is used only for answer generation. The existing Google embedding
+model remains responsible for query embeddings, so changing the fallback model does not
+require re-embedding the Supabase table.
+
+### Response-latency settings
+
+The generation chain is configured for interactive responses:
+
+- `max_tokens=256` limits unnecessarily long answers.
+- `retries=1` avoids long retry tails after provider failures.
+- `request_timeout=20` prevents a stalled generation request from holding the HTTP request indefinitely.
+- `thinking_level="minimal"` favors a faster response for this short, grounded review-answering task.
+- The OpenRouter fallback uses `max_tokens=256`, `timeout=20`, and `max_retries=1`.
+- The NVIDIA Nemotron fallback uses `reasoning={"effort": "none"}` so its reasoning
+  budget does not consume the entire answer budget and produce an empty answer.
+
+The retrieval count remains at three documents so the answer still has enough evidence diversity.
 
 ### Service-role key security
 
@@ -259,7 +304,7 @@ This operation:
 1. Validates the required environment variables.
 2. Reads and validates the CSV.
 3. Converts usable rows into LangChain documents.
-4. Creates Gemini embeddings using `models/text-embedding-004`.
+4. Creates Gemini embeddings using `models/gemini-embedding-001` with 768 dimensions.
 5. Inserts the documents into the Supabase table named `chatbotecomm`.
 6. Runs a small verification similarity search and prints the retrieved documents.
 
@@ -275,7 +320,7 @@ The schema creates:
 
 - The `vector` extension in the `extensions` schema.
 - The `public.chatbotecomm` document table.
-- A 768-dimensional embedding column for Gemini `text-embedding-004` embeddings.
+- A 768-dimensional embedding column for Gemini `models/gemini-embedding-001` embeddings.
 - The `match_documents` RPC function required by LangChain’s `SupabaseVectorStore`.
 - An HNSW cosine-similarity index.
 
@@ -432,6 +477,8 @@ The current tests cover:
 - Empty chat-question validation.
 - Successful API response shape.
 - Controlled handling of retrieval-chain failures.
+- OpenRouter fallback after primary Gemini failure.
+- Primary-provider success without invoking the fallback.
 
 The tests mock the chatbot chain and use temporary CSV fixtures. They do not call Gemini or Supabase, so they can run without credentials or network access.
 
@@ -516,6 +563,7 @@ This project should be described accurately as a focused RAG proof of concept.
 - It does not yet include a formal retrieval precision/recall evaluation set.
 - Repeated ingestion may create duplicate documents in the Supabase vector table.
 - Real requests depend on external Gemini and Supabase credentials, connectivity, quotas, and service availability.
+- Generation latency is also affected by Gemini model availability, quota, network conditions, and provider load. The application bounds retries and request time, but cannot guarantee a fixed response time.
 
 ---
 
@@ -545,6 +593,13 @@ SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 ```
 
+For the optional fallback, also check:
+
+```text
+OPENROUTER_API_KEY
+OPENROUTER_MODEL=nvidia/nemotron-3.5-lightning:free
+```
+
 Do not add quotes unless they are intentionally part of the value, and do not include extra spaces around the assignment.
 
 ### Supabase connection failure
@@ -555,7 +610,7 @@ Check:
 2. `SUPABASE_SERVICE_ROLE_KEY` is active and is being used only by the backend.
 3. The SQL in `supabase/schema.sql` has been executed successfully.
 4. The `public.chatbotecomm` table and `public.match_documents` function exist.
-5. The embedding column is `extensions.vector(768)`, matching `text-embedding-004`.
+5. The embedding column is `extensions.vector(768)`, matching `models/gemini-embedding-001`.
 6. The machine can reach Supabase over the network.
 
 ### Chat starts but returns a provider error
@@ -564,11 +619,56 @@ Check the terminal output for the server-side traceback. Common causes include:
 
 - An invalid or expired Google API key.
 - Gemini quota or model access restrictions.
+- An invalid or expired OpenRouter API key.
+- OpenRouter rate limits or temporary unavailability of the configured free model.
+- A missing or misspelled `OPENROUTER_MODEL` value.
 - A missing Supabase table or `match_documents` function.
 - A network or TLS issue.
 - Incorrect environment-variable values.
 
 The browser intentionally receives only a general retry message rather than private provider details.
+
+The terminal logs identify whether the primary or fallback provider was used. The
+fallback log has the form:
+
+```text
+Primary Gemini generation failed; retrying with OpenRouter fallback error_type=...
+```
+
+If the browser continues to show the generic 503 message after changing `.env`, stop
+the old Flask process and start one server from the project directory. On Windows,
+check which process owns port 5000:
+
+```powershell
+Get-NetTCPConnection -LocalPort 5000 -State Listen
+```
+
+Then stop the reported process if it is an old server and restart the application:
+
+```powershell
+Stop-Process -Id <PID>
+python app.py
+```
+
+Only one Flask process should be listening on port 5000. Starting a second process
+while the old one is still listening does not replace the old server; the browser will
+continue receiving responses from the old process.
+
+### Responses are slow
+
+The request has two logical remote stages: embedding/retrieval through Google and
+Supabase, then answer generation through Gemini or the OpenRouter fallback. The
+generation stage is usually the largest variable cost. Check the server logs for:
+
+```text
+chat_latency retrieval_seconds=... generation_seconds=... provider=... documents=...
+```
+
+If Gemini returns a model-not-found or quota error, the configured OpenRouter fallback
+is attempted when `OPENROUTER_API_KEY` is available. To change the primary model, set
+`GEMINI_MODEL` to a model available to your Google AI project. If the provider is
+responding slowly, the 20-second request timeout prevents the request from waiting
+indefinitely.
 
 ### No useful answer for a product question
 

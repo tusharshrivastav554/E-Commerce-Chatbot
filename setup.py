@@ -6,5 +6,5 @@ setup(
     author="tusharshrivastav554",
     author_email="tusharshrivastav554@gmail.com",
     packages=find_packages(),
-    install_requires=['langchain-community','langchain','langchain-google-genai','google-generativeai','datasets','pypdf','python-dotenv','flask','supabase']
+    install_requires=['langchain-community','langchain','langchain-google-genai','langchain-openai','google-generativeai','datasets','pypdf','python-dotenv','flask','supabase']
 )

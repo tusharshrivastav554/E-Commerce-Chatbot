@@ -1,14 +1,18 @@
 import os
+import logging
+import time
 from pathlib import Path
 from dotenv import load_dotenv
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
-# Replaced OpenAI with Google GenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from ecommbot.ingest import ingestdata
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+logger = logging.getLogger(__name__)
 
 def generation(vstore):
     # Configure retriever to fetch the top 3 most relevant product snippets
@@ -42,22 +46,83 @@ def generation(vstore):
             "Add it to .env before creating the Gemini generation chain."
         )
 
-    # temperature=0.3 keeps the bot factual and consistent for e-commerce
+    model_name = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+
+    # Keep responses concise and avoid long retry tails for an interactive chat.
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
+        model=model_name,
         temperature=0.3,
+        max_tokens=256,
+        retries=1,
+        request_timeout=20,
+        thinking_level="minimal",
         google_api_key=google_api_key,
     )
 
     answer_chain = prompt | llm | StrOutputParser()
 
+    openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    fallback_chain = None
+    if openrouter_api_key:
+        openrouter_model = os.getenv(
+            "OPENROUTER_MODEL",
+            "nvidia/nemotron-3.5-lightning:free",
+        ).strip()
+        fallback_llm = ChatOpenAI(
+            model=openrouter_model,
+            base_url="https://openrouter.ai/api/v1",
+            api_key=openrouter_api_key,
+            temperature=0.3,
+            max_tokens=256,
+            timeout=20,
+            max_retries=1,
+            reasoning={"effort": "none"},
+        )
+        fallback_chain = prompt | fallback_llm | StrOutputParser()
+        logger.info("OpenRouter fallback enabled with model=%s", openrouter_model)
+    else:
+        logger.warning(
+            "OPENROUTER_API_KEY is not configured; Gemini will have no generation fallback"
+        )
+
     def generate_result(question):
+        retrieval_started = time.perf_counter()
         documents = retriever.invoke(question)
+        retrieval_seconds = time.perf_counter() - retrieval_started
         context = _format_context(documents)
-        answer = answer_chain.invoke({"context": context, "question": question})
+
+        generation_started = time.perf_counter()
+        answer, provider = _invoke_with_fallback(
+            answer_chain,
+            fallback_chain,
+            {"context": context, "question": question},
+        )
+        generation_seconds = time.perf_counter() - generation_started
+        logger.info(
+            "chat_latency retrieval_seconds=%.3f generation_seconds=%.3f provider=%s documents=%d",
+            retrieval_seconds,
+            generation_seconds,
+            provider,
+            len(documents),
+        )
         return {"answer": answer, "sources": format_sources(documents)}
 
     return RunnableLambda(generate_result)
+
+
+def _invoke_with_fallback(primary_chain, fallback_chain, payload):
+    """Run generation once, using the same retrieved context for the fallback."""
+    try:
+        return primary_chain.invoke(payload), "gemini"
+    except Exception as primary_error:
+        if fallback_chain is None:
+            raise
+
+        logger.warning(
+            "Primary Gemini generation failed; retrying with OpenRouter fallback error_type=%s",
+            type(primary_error).__name__,
+        )
+        return fallback_chain.invoke(payload), "openrouter"
 
 
 def _format_context(documents):
