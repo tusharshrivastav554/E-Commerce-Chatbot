@@ -491,8 +491,6 @@ This project should be described accurately as a focused RAG proof of concept.
 - Repeated ingestion may create duplicate documents in the vector collection.
 - Real requests depend on external Gemini and Astra DB credentials, connectivity, quotas, and service availability.
 
-Do not claim that the system improves sales, reduces support costs, or produces accurate recommendations unless those outcomes have been measured separately.
-
 ---
 
 ## Troubleshooting
@@ -558,8 +556,6 @@ The current ingestion function adds the converted documents to the selected coll
 
 ## Possible next improvements
 
-The following improvements are intentionally not required for the current proof of concept:
-
 1. Add a small labeled evaluation set for retrieval quality and grounded-answer behavior.
 2. Add a deterministic deduplication or collection-refresh workflow for repeated ingestion.
 3. Add optional conversation history with a clear context-length limit.
@@ -567,15 +563,3 @@ The following improvements are intentionally not required for the current proof 
 5. Add a proper product catalog source for price and availability.
 6. Add observability for latency, retrieval count, and provider errors without logging private user data.
 7. Add deployment configuration after the local workflow is stable.
-
-These should be added only when the product requirement justifies their additional complexity.
-
----
-
-## Interview summary
-
-This project can be presented as:
-
-> I built a retail product-review assistant using Flask, LangChain, Gemini, and Astra DB. I converted structured review data into metadata-enriched documents, generated embeddings, stored them in a cloud vector database, retrieved relevant review evidence for each question, and used Gemini to generate a grounded answer. I added input validation, an explicit insufficient-information fallback, lightweight evidence references, safe frontend rendering, and tests that mock external services.
-
-The most important technical trade-off to explain is that the system prioritizes a small, transparent RAG workflow over unnecessary complexity such as fine-tuning, agents, or microservices.
