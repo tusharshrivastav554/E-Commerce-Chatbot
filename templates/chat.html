@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>E-Commerce Product Assistant</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@4.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.5.0/css/all.css">
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body>
+    <main class="container-fluid h-100">
+        <div class="row justify-content-center h-100">
+            <div class="col-md-8 col-xl-6 chat">
+                <section class="card" aria-label="E-commerce product assistant">
+                    <header class="card-header msg_head">
+                        <div class="d-flex bd-highlight">
+                            <div class="img_cont">
+                                <img src="https://static.vecteezy.com/system/resources/previews/016/017/018/non_2x/ecommerce-icon-free-png.png"
+                                     class="rounded-circle user_img" alt="E-commerce assistant icon">
+                                <span class="online_icon" aria-label="Assistant available"></span>
+                            </div>
+                            <div class="user_info">
+                                <span>E-Commerce Product Assistant</span>
+                                <p>Answers based on available customer reviews</p>
+                            </div>
+                        </div>
+                    </header>
+
+                    <div id="messageFormeight" class="card-body msg_card_body" aria-live="polite">
+                        <div class="welcome_message">
+                            Ask about product experience, sound quality, battery life, comfort, or common complaints.
+                            I answer from the available customer reviews.
+                        </div>
+                    </div>
+
+                    <footer class="card-footer">
+                        <form id="messageArea" class="input-group">
+                            <label class="sr-only" for="text">Your product question</label>
+                            <input type="text" id="text" name="msg" placeholder="Ask about a product..."
+                                   autocomplete="off" class="form-control type_msg" required>
+                            <div class="input-group-append">
+                                <button type="submit" id="send" class="input-group-text send_btn" aria-label="Send question">
+                                    <i class="fas fa-location-arrow" aria-hidden="true"></i>
+                                </button>
+                            </div>
+                        </form>
+                        <div id="requestStatus" class="request_status" role="status" aria-live="polite"></div>
+                    </footer>
+                </section>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const form = document.getElementById("messageArea");
+        const input = document.getElementById("text");
+        const sendButton = document.getElementById("send");
+        const messages = document.getElementById("messageFormeight");
+        const requestStatus = document.getElementById("requestStatus");
+
+        function appendMessage(text, direction, sources = []) {
+            const row = document.createElement("div");
+            row.className = `message_row ${direction}`;
+
+            const bubble = document.createElement("div");
+            bubble.className = direction === "sent" ? "msg_cotainer_send" : "msg_cotainer";
+
+            const messageText = document.createElement("div");
+            messageText.className = "message_text";
+            messageText.textContent = text;
+            bubble.appendChild(messageText);
+
+            if (direction === "received" && sources.length > 0) {
+                const sourcesHeading = document.createElement("strong");
+                sourcesHeading.className = "sources_heading";
+                sourcesHeading.textContent = "Evidence used";
+                bubble.appendChild(sourcesHeading);
+
+                const sourceList = document.createElement("ul");
+                sourceList.className = "sources_list";
+                sources.forEach((source) => {
+                    const item = document.createElement("li");
+                    const rating = source.rating === undefined ? "" : ` — ${source.rating}/5`;
+                    item.textContent = `${source.product_name || "Unknown product"}${rating}`;
+                    sourceList.appendChild(item);
+                });
+                bubble.appendChild(sourceList);
+            }
+
+            row.appendChild(bubble);
+            messages.appendChild(row);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const question = input.value.trim();
+            if (!question || sendButton.disabled) {
+                return;
+            }
+
+            appendMessage(question, "sent");
+            input.value = "";
+            sendButton.disabled = true;
+            requestStatus.textContent = "Searching customer reviews...";
+
+            try {
+                const response = await fetch("/get", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                    body: new URLSearchParams({ msg: question })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || "The chatbot could not answer right now.");
+                }
+                appendMessage(data.answer, "received", data.sources || []);
+                requestStatus.textContent = "";
+            } catch (error) {
+                appendMessage(error.message, "received");
+                requestStatus.textContent = "";
+            } finally {
+                sendButton.disabled = false;
+                input.focus();
+            }
+        });
+    </script>
+</body>
+</html>
